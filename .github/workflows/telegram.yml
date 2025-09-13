@@ -1,83 +1,112 @@
-NotifytifyNama workflow yang akan tampil di tab Actions GitHub
-name: Telegram
 
-# Pemicu workflow
+# Nama workflow yang akan tampil di tab Actions GitHub
+name: Build and Notify Telegram
+
+# Pemicu workflow: dijalankan setiap kali ada 'push' ke branch 'main'
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ main ] # Ganti 'main' jika nama branch utama Anda berbeda (mis: 'master')
 
 jobs:
   build_and_notify:
-    # Menggunakan sistem operasi Ubuntu versi terbaru
+    # Menggunakan runner Ubuntu versi terbaru
     runs-on: ubuntu-latest
 
     steps:
-      # LANGKAH 1: Mengunduh (Checkout) Kode dari Repositori Fork Anda
-      - name: Checkout Your Fork's Repository
-        uses: actions/checkout@v4
-        with:
-          # Memberikan izin pada workflow untuk melakukan push (dibutuhkan untuk git pull)
-          token: ${{ secrets.GITHUB_TOKEN }}
+    # Langkah 1: Checkout kode dari repository
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        # 'fetch-depth: 0' diperlukan untuk mengambil semua riwayat git,
+        # agar kita bisa membuat changelog dari commit sebelumnya.
+        fetch-depth: 0
 
-      # LANGKAH 2: [PERBAIKAN] Sinkronisasi Otomatis dengan Repositori Asli
-      # Ini akan memastikan kode Anda selalu yang paling baru sebelum di-build.
-      - name: Sync with Original (Upstream) Repository
-        run: |
-          git config --global user.name 'github-actions'
-          git config --global user.email 'github-actions@github.com'
-          git remote add upstream https://github.com/SukiSU-Ultra/SukiSU.git
-          git fetch upstream
-          git reset --hard upstream/main
+    # =========================================================================
+    # == Sesuaikan bagian ini dengan langkah-langkah build proyek Anda ==
+    # =========================================================================
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
 
-      # LANGKAH 3: Menyiapkan Lingkungan Build Java
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: 'gradle'
+    # Perubahan: Menjalankan build untuk debug dan release sekaligus.
+    # 'continue-on-error: true' memastikan workflow lanjut meskipun build release gagal (misal: signing key tidak ada)
+    - name: Build Debug and Release APKs
+      run: ./gradlew assembleDebug assembleRelease
+      continue-on-error: true
+    # =========================================================================
+    # == Akhir dari bagian yang perlu disesuaikan ==
+    # =========================================================================
 
-      # LANGKAH 4: Memberikan Izin Eksekusi pada Gradle Wrapper
-      - name: Grant execute permission for gradlew
-        run: chmod +x ./gradlew
+    # Langkah 2: Buat Changelog dari commit message
+    - name: Generate Changelog
+      id: generate_changelog
+      run: |
+        echo "📝 **Changelog:**" > changelog.txt
+        git log ${{ github.event.before }}..${{ github.sha }} --pretty=format:"- %s" >> changelog.txt
+        echo "CHANGELOG_CONTENT=$(cat changelog.txt)" >> $GITHUB_ENV
 
-      # LANGKAH 5: Membangun Proyek dan Membuat APK
-      - name: Build with Gradle
-        run: ./gradlew :app:assembleRelease
+    # Langkah 3: Cari file .apk yang telah di-build
+    - name: Find APK files
+      id: find_files
+      run: |
+        # Cari file APK di direktori output masing-masing
+        DEBUG_APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+        RELEASE_APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+        
+        # Simpan path ke environment variable untuk digunakan di langkah selanjutnya
+        echo "DEBUG_APK_PATH=$DEBUG_APK_PATH" >> $GITHUB_ENV
+        echo "RELEASE_APK_PATH=$RELEASE_APK_PATH" >> $GITHUB_ENV
+        
+        # Buat output untuk mengecek apakah file ditemukan, sebagai kondisi di langkah pengiriman
+        echo "debug_apk_found=$(if [ -f "$DEBUG_APK_PATH" ]; then echo "true"; else echo "false"; fi)" >> $GITHUB_OUTPUT
+        echo "release_apk_found=$(if [ -f "$RELEASE_APK_PATH" ]; then echo "true"; else echo "false"; fi)" >> $GITHUB_OUTPUT
+        
+        echo "Debug APK Found: $(if [ -f "$DEBUG_APK_PATH" ]; then echo "Yes"; else echo "No"; fi)"
+        echo "Release APK Found: $(if [ -f "$RELEASE_APK_PATH" ]; then echo "Yes"; else echo "No"; fi)"
+        
+    # Langkah 4: Kirim build DEBUG jika ada
+    - name: Send Debug APK to Telegram
+      # Hanya berjalan jika file debug APK ditemukan
+      if: steps.find_files.outputs.debug_apk_found == 'true'
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_CHAT_ID }}
+        token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        document: ${{ env.DEBUG_APK_PATH }}
+        caption: |
+          🎉 **Build DEBUG Baru Tersedia!** 🎉
 
-      # LANGKAH 6: [FITUR BARU] Menemukan File APK & Menetapkan Nama Dinamis
-      # Secara otomatis mencari file .apk di folder output.
-      - name: Find APK File and Set Dynamic Name
-        id: find_apk
-        run: |
-          APK_PATH=$(find app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "apk_filename=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
+          **Repository:** `${{ github.repository }}`
+          
+          **Revisi:**
+          - **Commit:** `[Lihat Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})`
+          - **Workflow Run:** `[Lihat Laporan Build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+          
+          ${{ env.CHANGELOG_CONTENT }}
+        format: markdown
 
-      # LANGKAH 7: Mengambil Changelog dari Commit Terakhir
-      - name: Get Commit Changelog
-        id: changelog
-        run: echo "changelog_message<<EOF$(git log -1 --pretty=%B)EOF" >> $GITHUB_OUTPUT
+    # Langkah 5: Kirim build RELEASE jika ada
+    - name: Send Release APK to Telegram
+      # Hanya berjalan jika file release APK ditemukan
+      if: steps.find_files.outputs.release_apk_found == 'true'
+      uses: appleboy/telegram-action@master
+      with:
+        to: ${{ secrets.TELEGRAM_CHAT_ID }}
+        token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        document: ${{ env.RELEASE_APK_PATH }}
+        caption: |
+          🚀 **Build RELEASE Baru Tersedia!** 🚀
 
-      # LANGKAH 8: Mengirim APK dan Notifikasi ke Telegram
-      - name: Send APK to Telegram
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ secrets.TELEGRAM_CHAT_ID }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          # Menggunakan path APK yang ditemukan secara dinamis dari langkah #6
-          document: ${{ steps.find_apk.outputs.apk_path }}
-          message: |
-            *🚀 New SukiSU Build is Ready!*
+          **Repository:** `${{ github.repository }}`
+          
+          **Revisi:**
+          - **Commit:** `[Lihat Commit](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})`
+          - **Workflow Run:** `[Lihat Laporan Build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})`
 
-            *File:* `${{ steps.find_apk.outputs.apk_filename }}`
-            *Build:* `${{ github.run_number }}`
-            *Branch:* `${{ github.ref_name }}`
-
-            *Changelog:*
-            ```
-            ${{ steps.changelog.outputs.changelog_message }}
-            ```
-
+          ${{ env.CHANGELOG_CONTENT }}
+        format: markdown
