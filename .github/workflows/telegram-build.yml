@@ -14,19 +14,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # LANGKAH 1: Mengunduh (Checkout) Kode dari Repositori ASLI SukiSU
-      # Ini adalah perbaikan penting untuk memastikan semua file proyek terunduh.
-      - name: Checkout SukiSU-Ultra repository
+      # LANGKAH 1: Mengunduh (Checkout) Kode dari Repositori Fork Anda
+      - name: Checkout Your Fork's Repository
         uses: actions/checkout@v4
         with:
-          repository: 'SukiSU-Ultra/SukiSU'
-          ref: 'main'
-          fetch-depth: 0
+          # Memberikan izin pada workflow untuk melakukan push (dibutuhkan untuk git pull)
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # LANGKAH 2: [DEBUG] Verifikasi File Setelah Checkout
-      # Langkah ini WAJIB ADA. Jika tidak muncul, berarti file ini belum dijalankan.
-      - name: '[DEBUG] List files in the root directory'
-        run: ls -la
+      # LANGKAH 2: [PERBAIKAN] Sinkronisasi Otomatis dengan Repositori Asli
+      # Ini akan memastikan kode Anda selalu yang paling baru sebelum di-build.
+      - name: Sync with Original (Upstream) Repository
+        run: |
+          git config --global user.name 'github-actions'
+          git config --global user.email 'github-actions@github.com'
+          git remote add upstream https://github.com/SukiSU-Ultra/SukiSU.git
+          git fetch upstream
+          git reset --hard upstream/main
 
       # LANGKAH 3: Menyiapkan Lingkungan Build Java
       - name: Set up JDK 17
@@ -34,10 +37,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      # Menggunakan cache untuk dependensi Gradle
-      - name: Gradle Cache
-        uses: gradle/actions/setup-gradle@v3
+          cache: 'gradle'
 
       # LANGKAH 4: Memberikan Izin Eksekusi pada Gradle Wrapper
       - name: Grant execute permission for gradlew
@@ -47,9 +47,14 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew :app:assembleRelease
 
-      # LANGKAH 6: [DEBUG] Verifikasi Hasil Build APK
-      - name: '[DEBUG] List contents of APK output directory'
-        run: ls -R app/build/outputs/apk/release
+      # LANGKAH 6: [FITUR BARU] Menemukan File APK & Menetapkan Nama Dinamis
+      # Secara otomatis mencari file .apk di folder output.
+      - name: Find APK File and Set Dynamic Name
+        id: find_apk
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "apk_filename=$(basename $APK_PATH)" >> $GITHUB_OUTPUT
 
       # LANGKAH 7: Mengambil Changelog dari Commit Terakhir
       - name: Get Commit Changelog
@@ -62,12 +67,15 @@ jobs:
         with:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          document: app/build/outputs/apk/release/app-release.apk
+          # Menggunakan path APK yang ditemukan secara dinamis dari langkah #6
+          document: ${{ steps.find_apk.outputs.apk_path }}
           message: |
             *🚀 New SukiSU Build is Ready!*
-            *Version:* `SukiSU_v1.0_build-${{ github.run_number }}`
-            *Commit by:* `${{ github.actor }}`
+
+            *File:* `${{ steps.find_apk.outputs.apk_filename }}`
+            *Build:* `${{ github.run_number }}`
             *Branch:* `${{ github.ref_name }}`
+
             *Changelog:*
             ```
             ${{ steps.changelog.outputs.changelog_message }}
