@@ -1,0 +1,68 @@
+# Nama workflow
+name: Build SukiSU and Notify Telegram
+
+# Pemicu: dijalankan saat ada push atau bisa dijalankan manual
+on:
+  push:
+    branches:
+      - main # atau branch default repositori
+  workflow_dispatch:
+
+jobs:
+  build_and_notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout kode dari repositori
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Ambil semua history untuk changelog yang lebih lengkap
+          fetch-depth: 0
+
+      # 2. Setup Java Development Kit (JDK) versi 17 (sesuai kebutuhan SukiSU)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 3. Cache Gradle untuk mempercepat build
+      - name: Gradle Cache
+        uses: gradle/actions/setup-gradle@v3
+
+      # 4. Berikan izin eksekusi untuk gradlew
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      # 5. Build release APK menggunakan Gradle
+      # Perintah ini spesifik untuk proyek SukiSU
+      - name: Build with Gradle
+        run: ./gradlew :app:assembleRelease
+
+      # 6. Ekstrak pesan dari commit terakhir untuk changelog
+      - name: Get Commit Changelog
+        id: changelog
+        run: echo "changelog_message<<EOF$(git log -1 --pretty=%B)EOF" >> $GITHUB_OUTPUT
+
+      # 7. Kirim APK ke Telegram
+      - name: Send APK to Telegram
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_CHAT_ID }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # Path ke file APK yang dihasilkan oleh SukiSU
+          document: app/build/outputs/apk/release/app-release.apk
+          # Format pesan (meniru contoh dari gambar)
+          message: |
+            *CI/beta*
+            *SukiSU_v1.0_${{ github.run_number }}-release.apk*
+
+            *Manager*
+            #ci_${{ github.run_number }}
+            
+            *Changelog:*
+            ${{ steps.changelog.outputs.changelog_message }}
+
+            *Commit by:* `${{ github.actor }}`
+            *Branch:* `${{ github.ref_name }}`
