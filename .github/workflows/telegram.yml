@@ -1,5 +1,5 @@
-# Nama workflow yang akan tampil di tab Actions GitHub
-name: Build SukiSU and Notify Telegram
+NotifytifyNama workflow yang akan tampil di tab Actions GitHub
+name: Telegram
 
 # Pemicu workflow
 on:
